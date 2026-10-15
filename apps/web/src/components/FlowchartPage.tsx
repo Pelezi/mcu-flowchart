@@ -23,6 +23,8 @@ import {
 } from "@xyflow/react";
 import { AppNavbar } from "./AppNavbar";
 import { apiV1Path, resolvePosterUrl } from "../lib/api";
+import { useWatched } from "../lib/useWatched";
+import { useToast } from "./Toast";
 import flowchartFixedEdgeRoutes from "@/lib/flowchartFixedEdgeRoutes.json";
 import flowchartFixedPositions from "@/lib/flowchartFixedPositions.json";
 import flowchartUniverseZones from "@/lib/flowchartUniverseZones.json";
@@ -87,6 +89,7 @@ interface MediaNodeData extends Record<string, unknown> {
   universeLabel: string;
   sagaLabel: string;
   universeColor: string;
+  watched?: boolean;
 }
 
 interface UniverseGroupNodeData extends Record<string, unknown> {
@@ -460,6 +463,9 @@ const MediaFlowNode = memo(function MediaFlowNode({ data, selected }: NodeProps<
       >
         <Handle type="target" position={Position.Top} className="h-2! w-2! border-0! bg-transparent! opacity-0!" />
         <Handle type="source" position={Position.Bottom} className="h-2! w-2! border-0! bg-transparent! opacity-0!" />
+        {data.watched === true && (
+          <div className="absolute right-0.5 top-0.5 h-2 w-2 rounded-full bg-emerald-500" />
+        )}
       </div>
     );
   }
@@ -475,6 +481,13 @@ const MediaFlowNode = memo(function MediaFlowNode({ data, selected }: NodeProps<
       <div className="nodrag nopan flex h-full cursor-pointer gap-3 p-3">
         <div className="relative h-28 w-20 shrink-0 overflow-hidden rounded-xl border border-white/10 bg-zinc-800">
           <Image src={resolvePosterUrl(data.poster)} alt={data.title} fill className="object-cover" sizes="80px" unoptimized />
+          {data.watched === true && (
+            <div className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500 shadow">
+              <svg viewBox="0 0 10 10" className="h-2.5 w-2.5 text-white" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M1.5 5l2.5 2.5 4.5-4" />
+              </svg>
+            </div>
+          )}
         </div>
 
         <div className="min-w-0 flex-1">
@@ -910,6 +923,10 @@ export function FlowchartPage() {
   const [error, setError] = useState<string | null>(null);
   const [theme, setTheme] = useState<ThemeMode>("dark");
   const [selection, setSelection] = useState<SelectionState>({ kind: "none" });
+  const [hideWatched, setHideWatched] = useState(false);
+
+  const { watchedIds, isWatched, toggle: toggleWatched } = useWatched();
+  const { showToast } = useToast();
 
   useEffect(() => {
     document.body.classList.add("flowchart-route");
@@ -1027,39 +1044,60 @@ export function FlowchartPage() {
       return [];
     }
 
+    const state = flowState;
+
+    function applyBase(node: (typeof state.nodes)[number]) {
+      if (node.type !== "mediaNode") {
+        return node;
+      }
+
+      const watched = watchedIds.has(node.id);
+      const dimmed = hideWatched && watched;
+
+      return {
+        ...node,
+        data: { ...node.data, watched },
+        style: dimmed ? { ...node.style, opacity: 0.15 } : node.style,
+      };
+    }
+
     if (selection.kind === "none") {
-      return flowState.nodes;
+      return flowState.nodes.map(applyBase);
     }
 
     if (selection.kind === "node") {
-      return flowState.nodes.map((node) =>
-        node.id === selection.nodeId ? { ...node, selected: true } : node,
-      );
+      return flowState.nodes.map((node) => {
+        const base = applyBase(node);
+        return node.id === selection.nodeId ? { ...base, selected: true } : base;
+      });
     }
 
     if (selection.kind === "edge") {
-      return flowState.nodes.map((node) =>
-        node.id === selection.source || node.id === selection.target
-          ? { ...node, selected: true }
-          : node,
-      );
+      return flowState.nodes.map((node) => {
+        const base = applyBase(node);
+        return node.id === selection.source || node.id === selection.target
+          ? { ...base, selected: true }
+          : base;
+      });
     }
 
     const neighbourIds = getNeighbourIds(selection.nodeId, flowState.edges);
     const highlightIds = new Set([selection.nodeId, ...neighbourIds]);
 
     return flowState.nodes.map((node) => {
+      const base = applyBase(node);
+
       if (node.type !== "mediaNode") {
-        return node;
+        return base;
       }
 
       if (highlightIds.has(node.id)) {
-        return { ...node, selected: true };
+        return { ...base, selected: true };
       }
 
-      return { ...node, style: { ...node.style, opacity: 0.15 } };
+      return { ...base, style: { ...base.style, opacity: 0.15 } };
     });
-  }, [flowState, selection]);
+  }, [flowState, selection, watchedIds, hideWatched]);
 
   const displayEdges = useMemo(() => {
     if (!flowState) {
@@ -1247,6 +1285,18 @@ export function FlowchartPage() {
                         </div>
                       ))}
                     </div>
+                    <div className="mt-3 border-t border-zinc-800 pt-2.5">
+                      <p className="text-zinc-400">
+                        {watchedIds.size} / {allMedia.length} watched
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setHideWatched((v) => !v)}
+                        className={`mt-1.5 w-full rounded-lg border px-2 py-1 text-left transition ${hideWatched ? "border-emerald-700 bg-emerald-900/30 text-emerald-300" : "border-zinc-700 text-zinc-400 hover:text-zinc-200"}`}
+                      >
+                        {hideWatched ? "Showing unwatched" : "Hide watched"}
+                      </button>
+                    </div>
                   </div>
                 </Panel>
                 {selection.kind === "edge" && (
@@ -1347,6 +1397,17 @@ export function FlowchartPage() {
                         className="flex items-center justify-center rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-zinc-800 hover:text-white"
                       >
                         Highlight connections
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const wasWatched = isWatched(panelMedia.id);
+                          toggleWatched(panelMedia.id);
+                          showToast(wasWatched ? "Removed from watched" : "✓ Marked as watched");
+                        }}
+                        className={`flex items-center justify-center gap-1.5 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${isWatched(panelMedia.id) ? "border-emerald-700 bg-emerald-900/30 text-emerald-300 hover:bg-emerald-900/50" : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800 hover:text-white"}`}
+                      >
+                        {isWatched(panelMedia.id) ? "✓ Watched" : "Mark as watched"}
                       </button>
                     </div>
                   </div>
