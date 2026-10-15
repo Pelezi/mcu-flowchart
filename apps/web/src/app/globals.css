@@ -71,6 +71,12 @@ body.flowchart-route .site-footer nav {
   pointer-events: auto !important;
 }
 
+body.flowchart-route .react-flow__edge,
+body.flowchart-route .react-flow__edge-path,
+body.flowchart-route .react-flow__edge-interaction {
+  cursor: pointer !important;
+}
+
 html[data-theme="dark"] {
   color-scheme: dark;
   --themed-icon-color: #ffffff;

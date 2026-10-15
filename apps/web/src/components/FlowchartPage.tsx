@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useMemo, useState, memo } from "react";
+import { useCallback, useEffect, useMemo, useState, memo } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -106,7 +106,15 @@ interface EdgeRouteOverride {
 }
 
 interface FlowEdgeData extends Record<string, unknown> {
+  connectionType: ConnectionType;
   routePoints?: EdgeRoutePoint[];
+}
+
+interface SelectedEdgeState {
+  edgeId: string;
+  source: string;
+  target: string;
+  connectionType: ConnectionType;
 }
 
 interface NodeInternalsRefreshProps {
@@ -381,6 +389,24 @@ function NodeInternalsRefresh({ nodeIds, theme }: NodeInternalsRefreshProps) {
   return null;
 }
 
+function EdgeFocusController({ sourceId, targetId }: { sourceId: string | null; targetId: string | null }) {
+  const { fitView } = useReactFlow();
+
+  useEffect(() => {
+    if (!sourceId || !targetId) {
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      void fitView({ nodes: [{ id: sourceId }, { id: targetId }], duration: 600, padding: 0.45 });
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [fitView, sourceId, targetId]);
+
+  return null;
+}
+
 const MediaFlowNode = memo(function MediaFlowNode({ data, selected }: NodeProps<Node<MediaNodeData>>) {
   const zoom = useStore((state) => state.transform[2]);
   const isLowZoom = zoom < 0.3;
@@ -408,7 +434,7 @@ const MediaFlowNode = memo(function MediaFlowNode({ data, selected }: NodeProps<
       <Handle type="target" position={Position.Top} className="h-2! w-2! border-0! bg-transparent! opacity-0!" />
       <Handle type="source" position={Position.Bottom} className="h-2! w-2! border-0! bg-transparent! opacity-0!" />
 
-      <Link href={data.href} className="flex h-full gap-3 p-3">
+      <Link href={data.href} className="nodrag nopan flex h-full gap-3 p-3">
         <div className="relative h-28 w-20 shrink-0 overflow-hidden rounded-xl border border-white/10 bg-zinc-800">
           <Image src={resolvePosterUrl(data.poster)} alt={data.title} fill className="object-cover" sizes="80px" unoptimized />
         </div>
@@ -807,7 +833,7 @@ function buildFlowElements(
       target,
       type: routePoints ? "fixedRoute" : "simplebezier",
       animated: false,
-      data: routePoints ? { routePoints } : undefined,
+      data: { connectionType: edge.type, ...(routePoints ? { routePoints } : {}) },
       style: {
         stroke: style.color,
         strokeWidth,
@@ -844,6 +870,7 @@ export function FlowchartPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [theme, setTheme] = useState<ThemeMode>("dark");
+  const [selectedEdge, setSelectedEdge] = useState<SelectedEdgeState | null>(null);
 
   useEffect(() => {
     document.body.classList.add("flowchart-route");
@@ -927,6 +954,75 @@ export function FlowchartPage() {
   }, [edgeStyles, graph, sagas, theme, universes]);
   const graphNodeIds = useMemo(() => graph?.nodes.map((node) => node.id) ?? [], [graph]);
 
+  const nodeTitleById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const node of graph?.nodes ?? []) {
+      map.set(node.id, node.title);
+    }
+    return map;
+  }, [graph]);
+
+  const displayNodes = useMemo(() => {
+    if (!flowState) {
+      return [];
+    }
+    if (!selectedEdge) {
+      return flowState.nodes;
+    }
+    return flowState.nodes.map((node) =>
+      node.id === selectedEdge.source || node.id === selectedEdge.target
+        ? { ...node, selected: true }
+        : node,
+    );
+  }, [flowState, selectedEdge]);
+
+  const displayEdges = useMemo(() => {
+    if (!flowState) {
+      return [];
+    }
+    if (!selectedEdge) {
+      return flowState.edges;
+    }
+    return flowState.edges.map((edge) => {
+      const baseStyle = edge.style ?? {};
+      if (edge.id === selectedEdge.edgeId) {
+        return {
+          ...edge,
+          zIndex: 1000,
+          style: {
+            ...baseStyle,
+            opacity: 1,
+            strokeWidth: ((baseStyle.strokeWidth as number) ?? 2.6) + 2,
+          },
+        };
+      }
+      return {
+        ...edge,
+        style: {
+          ...baseStyle,
+          opacity: ((baseStyle.opacity as number) ?? 1) * 0.15,
+        },
+      };
+    });
+  }, [flowState, selectedEdge]);
+
+  const handleEdgeClick = useCallback(
+    (event: React.MouseEvent, edge: Edge<FlowEdgeData>) => {
+      event.stopPropagation();
+      setSelectedEdge({
+        edgeId: edge.id,
+        source: edge.source,
+        target: edge.target,
+        connectionType: edge.data?.connectionType ?? "required",
+      });
+    },
+    [],
+  );
+
+  const handlePaneClick = useCallback(() => {
+    setSelectedEdge(null);
+  }, []);
+
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-linear-to-b from-zinc-800 via-zinc-800 to-zinc-800 text-white">
       <AppNavbar />
@@ -950,8 +1046,8 @@ export function FlowchartPage() {
           {!loading && !error && flowState && (
             <div className="h-full w-full">
               <ReactFlow
-                 nodes={flowState.nodes}
-                 edges={flowState.edges}
+                 nodes={displayNodes}
+                 edges={displayEdges}
                  nodeTypes={FLOW_NODE_TYPES}
                  edgeTypes={FLOW_EDGE_TYPES}
                  defaultViewport={{ x: 500, y: 200, zoom: 0.5 }}
@@ -961,9 +1057,11 @@ export function FlowchartPage() {
                  proOptions={{ hideAttribution: true }}
                  nodesDraggable={false}
                  nodesConnectable={false}
-                 elementsSelectable={false}
+                 onEdgeClick={handleEdgeClick}
+                 onPaneClick={handlePaneClick}
                >
                 <NodeInternalsRefresh nodeIds={graphNodeIds} theme={theme} />
+                <EdgeFocusController sourceId={selectedEdge?.source ?? null} targetId={selectedEdge?.target ?? null} />
                 <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="rgba(255, 255, 255, 0.08)" />
                 <Controls
                   position="bottom-right"
@@ -989,6 +1087,36 @@ export function FlowchartPage() {
                     </div>
                   </div>
                 </Panel>
+                {selectedEdge && (
+                  <Panel position="bottom-center">
+                    <div className="flex items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-950/95 px-4 py-2.5 text-xs text-zinc-200 shadow-xl">
+                      <span
+                        className="shrink-0 rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide"
+                        style={{
+                          borderColor: edgeStyles[selectedEdge.connectionType].color,
+                          color: edgeStyles[selectedEdge.connectionType].color,
+                        }}
+                      >
+                        {edgeStyles[selectedEdge.connectionType].label}
+                      </span>
+                      <span className="font-medium text-white">
+                        {nodeTitleById.get(selectedEdge.source) ?? selectedEdge.source}
+                      </span>
+                      <span className="text-zinc-500">→</span>
+                      <span className="font-medium text-white">
+                        {nodeTitleById.get(selectedEdge.target) ?? selectedEdge.target}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handlePaneClick}
+                        className="ml-1 shrink-0 rounded-full px-1.5 text-zinc-400 hover:text-white"
+                        aria-label="Close"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </Panel>
+                )}
               </ReactFlow>
             </div>
           )}
