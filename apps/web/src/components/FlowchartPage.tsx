@@ -128,7 +128,8 @@ type SelectionState =
   | { kind: "none" }
   | { kind: "node"; nodeId: string }
   | { kind: "edge"; edgeId: string; source: string; target: string; connectionType: ConnectionType }
-  | { kind: "highlight"; nodeId: string };
+  | { kind: "highlight"; nodeId: string }
+  | { kind: "highlight-upstream"; nodeId: string };
 
 interface NodeInternalsRefreshProps {
   nodeIds: string[];
@@ -446,6 +447,35 @@ function getNeighbourIds(nodeId: string, edges: Edge<FlowEdgeData>[]): string[] 
   }
 
   return [...ids];
+}
+
+function getUpstreamIds(
+  nodeId: string,
+  edges: Edge<FlowEdgeData>[],
+  allowedTypes: Set<ConnectionType>,
+): Set<string> {
+  const visited = new Set<string>();
+  const queue = [nodeId];
+
+  while (queue.length > 0) {
+    const current = queue.pop()!;
+
+    if (visited.has(current)) {
+      continue;
+    }
+
+    visited.add(current);
+
+    for (const edge of edges) {
+      if (edge.target === current && allowedTypes.has(edge.data?.connectionType as ConnectionType)) {
+        if (!visited.has(edge.source)) {
+          queue.push(edge.source);
+        }
+      }
+    }
+  }
+
+  return visited;
 }
 
 const MediaFlowNode = memo(function MediaFlowNode({ data, selected }: NodeProps<Node<MediaNodeData>>) {
@@ -924,6 +954,8 @@ export function FlowchartPage() {
   const [theme, setTheme] = useState<ThemeMode>("dark");
   const [selection, setSelection] = useState<SelectionState>({ kind: "none" });
   const [hideWatched, setHideWatched] = useState(false);
+  const [upstreamTypes, setUpstreamTypes] = useState<Set<ConnectionType>>(new Set(["required"]));
+  const [panelMode, setPanelMode] = useState<"normal" | "mark-upstream">("normal");
 
   const { watchedIds, isWatched, toggle: toggleWatched } = useWatched();
   const { showToast } = useToast();
@@ -1081,6 +1113,24 @@ export function FlowchartPage() {
       });
     }
 
+    if (selection.kind === "highlight-upstream") {
+      const upstreamIds = getUpstreamIds(selection.nodeId, flowState.edges, upstreamTypes);
+
+      return flowState.nodes.map((node) => {
+        const base = applyBase(node);
+
+        if (node.type !== "mediaNode") {
+          return base;
+        }
+
+        if (upstreamIds.has(node.id)) {
+          return { ...base, selected: true };
+        }
+
+        return { ...base, style: { ...base.style, opacity: 0.15 } };
+      });
+    }
+
     const neighbourIds = getNeighbourIds(selection.nodeId, flowState.edges);
     const highlightIds = new Set([selection.nodeId, ...neighbourIds]);
 
@@ -1097,7 +1147,7 @@ export function FlowchartPage() {
 
       return { ...base, style: { ...base.style, opacity: 0.15 } };
     });
-  }, [flowState, selection, watchedIds, hideWatched]);
+  }, [flowState, selection, watchedIds, hideWatched, upstreamTypes]);
 
   const displayEdges = useMemo(() => {
     if (!flowState) {
@@ -1112,6 +1162,32 @@ export function FlowchartPage() {
       return flowState.edges.map((edge) => {
         const baseStyle = edge.style ?? {};
         if (edge.id === selection.edgeId) {
+          return {
+            ...edge,
+            zIndex: 1000,
+            style: {
+              ...baseStyle,
+              opacity: 1,
+              strokeWidth: ((baseStyle.strokeWidth as number) ?? 2.6) + 2,
+            },
+          };
+        }
+        return {
+          ...edge,
+          style: {
+            ...baseStyle,
+            opacity: ((baseStyle.opacity as number) ?? 1) * 0.15,
+          },
+        };
+      });
+    }
+
+    if (selection.kind === "highlight-upstream") {
+      const upstreamIds = getUpstreamIds(selection.nodeId, flowState.edges, upstreamTypes);
+      return flowState.edges.map((edge) => {
+        const baseStyle = edge.style ?? {};
+        const isInChain = upstreamIds.has(edge.source) && upstreamIds.has(edge.target);
+        if (isInChain) {
           return {
             ...edge,
             zIndex: 1000,
@@ -1156,7 +1232,7 @@ export function FlowchartPage() {
         },
       };
     });
-  }, [flowState, selection]);
+  }, [flowState, selection, upstreamTypes]);
 
   const focusNodeIds = useMemo(() => {
     if (!flowState) {
@@ -1175,22 +1251,44 @@ export function FlowchartPage() {
       return [selection.nodeId, ...getNeighbourIds(selection.nodeId, flowState.edges)];
     }
 
-    return [];
-  }, [selection, flowState]);
-
-  const highlightInfo = useMemo(() => {
-    if (selection.kind !== "highlight" || !flowState) {
-      return null;
+    if (selection.kind === "highlight-upstream") {
+      return [...getUpstreamIds(selection.nodeId, flowState.edges, upstreamTypes)];
     }
 
-    const { nodeId } = selection;
-    const inCount = flowState.edges.filter((e) => e.target === nodeId).length;
-    const outCount = flowState.edges.filter((e) => e.source === nodeId).length;
+    return [];
+  }, [selection, flowState, upstreamTypes]);
 
-    return { title: nodeTitleById.get(nodeId) ?? nodeId, inCount, outCount };
-  }, [selection, flowState, nodeTitleById]);
+  const highlightInfo = useMemo(() => {
+    if (selection.kind === "highlight" && flowState) {
+      const { nodeId } = selection;
+      const inCount = flowState.edges.filter((e) => e.target === nodeId).length;
+      const outCount = flowState.edges.filter((e) => e.source === nodeId).length;
+      return { title: nodeTitleById.get(nodeId) ?? nodeId, inCount, outCount, kind: "highlight" as const };
+    }
+
+    if (selection.kind === "highlight-upstream" && flowState) {
+      const { nodeId } = selection;
+      const upstreamIds = getUpstreamIds(nodeId, flowState.edges, upstreamTypes);
+      const count = upstreamIds.size - 1;
+      return { title: nodeTitleById.get(nodeId) ?? nodeId, count, kind: "highlight-upstream" as const };
+    }
+
+    return null;
+  }, [selection, flowState, nodeTitleById, upstreamTypes]);
 
   const panelMedia = selection.kind === "node" ? (mediaById.get(selection.nodeId) ?? null) : null;
+
+  const upstreamMediaList = useMemo(() => {
+    if (selection.kind !== "node" || !flowState) {
+      return [];
+    }
+
+    const ids = getUpstreamIds(selection.nodeId, flowState.edges, upstreamTypes);
+    return [...ids]
+      .map((id) => mediaById.get(id))
+      .filter((m): m is NonNullable<typeof m> => m != null)
+      .sort((a, b) => a.release_date.localeCompare(b.release_date));
+  }, [selection, flowState, upstreamTypes, mediaById]);
 
   const handleNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
     if (node.type !== "mediaNode") {
@@ -1202,6 +1300,7 @@ export function FlowchartPage() {
         ? { kind: "none" }
         : { kind: "node", nodeId: node.id },
     );
+    setPanelMode("normal");
   }, []);
 
   const handleEdgeClick = useCallback((_event: React.MouseEvent, edge: Edge<FlowEdgeData>) => {
@@ -1216,10 +1315,30 @@ export function FlowchartPage() {
 
   const handlePaneClick = useCallback(() => {
     setSelection({ kind: "none" });
+    setPanelMode("normal");
   }, []);
 
   const handleHighlight = useCallback((nodeId: string) => {
     setSelection({ kind: "highlight", nodeId });
+  }, []);
+
+  const handleHighlightUpstream = useCallback((nodeId: string) => {
+    setSelection({ kind: "highlight-upstream", nodeId });
+  }, []);
+
+  const toggleUpstreamType = useCallback((type: ConnectionType) => {
+    setUpstreamTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(type)) {
+        if (next.size === 1) {
+          return prev;
+        }
+        next.delete(type);
+      } else {
+        next.add(type);
+      }
+      return next;
+    });
   }, []);
 
   return (
@@ -1329,7 +1448,7 @@ export function FlowchartPage() {
                     </div>
                   </Panel>
                 )}
-                {selection.kind === "highlight" && highlightInfo && (
+                {highlightInfo?.kind === "highlight" && (
                   <Panel position="bottom-center">
                     <div className="flex items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-950/95 px-4 py-2.5 text-xs text-zinc-200 shadow-xl">
                       <span className="font-medium text-white">{highlightInfo.title}</span>
@@ -1337,6 +1456,23 @@ export function FlowchartPage() {
                       <span className="text-zinc-300">↙ {highlightInfo.inCount} in</span>
                       <span className="text-zinc-500">·</span>
                       <span className="text-zinc-300">↗ {highlightInfo.outCount} out</span>
+                      <button
+                        type="button"
+                        onClick={handlePaneClick}
+                        className="ml-1 shrink-0 rounded-full px-1.5 text-zinc-400 hover:text-white"
+                        aria-label="Close"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </Panel>
+                )}
+                {highlightInfo?.kind === "highlight-upstream" && (
+                  <Panel position="bottom-center">
+                    <div className="flex items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-950/95 px-4 py-2.5 text-xs text-zinc-200 shadow-xl">
+                      <span className="font-medium text-white">{highlightInfo.title}</span>
+                      <span className="text-zinc-500">·</span>
+                      <span className="text-zinc-300">↑ {highlightInfo.count} upstream</span>
                       <button
                         type="button"
                         onClick={handlePaneClick}
@@ -1378,38 +1514,133 @@ export function FlowchartPage() {
                   </div>
 
                   <div className="flex flex-1 flex-col px-4 pb-6 pt-4">
-                    <h2 className="text-base font-bold leading-tight text-white">{panelMedia.title}</h2>
-                    <p className="mt-1 text-xs text-zinc-400">{formatDateLabel(panelMedia.release_date)}</p>
-                    <p className="mt-3 line-clamp-3 text-sm leading-relaxed text-zinc-300">{panelMedia.summary}</p>
+                    {panelMode === "mark-upstream" ? (
+                      <>
+                        <div className="flex items-center justify-between">
+                          <p className="text-sm font-semibold text-white">Mark up to this point</p>
+                          <button
+                            type="button"
+                            onClick={() => setPanelMode("normal")}
+                            className="text-xs text-zinc-500 hover:text-zinc-200"
+                          >
+                            Cancel
+                          </button>
+                        </div>
 
-                    <div className="mt-5 flex flex-col gap-2">
-                      <Link
-                        href={`/media/${panelMedia.id}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex items-center justify-center rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-zinc-800"
-                      >
-                        View full page ↗
-                      </Link>
-                      <button
-                        type="button"
-                        onClick={() => handleHighlight(panelMedia.id)}
-                        className="flex items-center justify-center rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-zinc-800 hover:text-white"
-                      >
-                        Highlight connections
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const wasWatched = isWatched(panelMedia.id);
-                          toggleWatched(panelMedia.id);
-                          showToast(wasWatched ? "Removed from watched" : "✓ Marked as watched");
-                        }}
-                        className={`flex items-center justify-center gap-1.5 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${isWatched(panelMedia.id) ? "border-emerald-700 bg-emerald-900/30 text-emerald-300 hover:bg-emerald-900/50" : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800 hover:text-white"}`}
-                      >
-                        {isWatched(panelMedia.id) ? "✓ Watched" : "Mark as watched"}
-                      </button>
-                    </div>
+                        <div className="mt-3 flex flex-wrap gap-1.5">
+                          {(["required", "optional", "references"] as ConnectionType[]).map((type) => (
+                            <button
+                              key={type}
+                              type="button"
+                              onClick={() => toggleUpstreamType(type)}
+                              className={`rounded-full border px-2.5 py-0.5 text-[11px] font-semibold transition ${upstreamTypes.has(type) ? "border-transparent text-white" : "border-zinc-700 text-zinc-500"}`}
+                              style={upstreamTypes.has(type) ? { backgroundColor: edgeStyles[type].color + "33", borderColor: edgeStyles[type].color, color: edgeStyles[type].color } : undefined}
+                            >
+                              {edgeStyles[type].label}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="mt-3 flex-1 overflow-y-auto">
+                          {upstreamMediaList.map((item) => (
+                            <div
+                              key={item.id}
+                              className={`flex items-center gap-2 border-b border-zinc-800/60 py-1.5 text-xs ${isWatched(item.id) ? "text-zinc-600" : "text-zinc-300"}`}
+                            >
+                              {isWatched(item.id) && <span className="text-emerald-600">✓</span>}
+                              <span className="truncate">{item.title}</span>
+                            </div>
+                          ))}
+                        </div>
+
+                        {(() => {
+                          const unwatchedCount = upstreamMediaList.filter((m) => !isWatched(m.id)).length;
+                          return unwatchedCount > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                for (const item of upstreamMediaList) {
+                                  if (!isWatched(item.id)) {
+                                    toggleWatched(item.id);
+                                  }
+                                }
+                                showToast(`✓ Marked ${unwatchedCount} as watched`);
+                                setPanelMode("normal");
+                              }}
+                              className="mt-4 flex items-center justify-center rounded-xl border border-emerald-700 bg-emerald-900/30 px-4 py-2.5 text-sm font-medium text-emerald-300 transition hover:bg-emerald-900/50"
+                            >
+                              Mark {unwatchedCount} as watched
+                            </button>
+                          ) : (
+                            <p className="mt-4 text-center text-xs text-zinc-500">All already watched</p>
+                          );
+                        })()}
+                      </>
+                    ) : (
+                      <>
+                        <h2 className="text-base font-bold leading-tight text-white">{panelMedia.title}</h2>
+                        <p className="mt-1 text-xs text-zinc-400">{formatDateLabel(panelMedia.release_date)}</p>
+                        <p className="mt-3 line-clamp-3 text-sm leading-relaxed text-zinc-300">{panelMedia.summary}</p>
+
+                        <div className="mt-4 flex flex-wrap gap-1.5">
+                          <p className="w-full text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Upstream types</p>
+                          {(["required", "optional", "references"] as ConnectionType[]).map((type) => (
+                            <button
+                              key={type}
+                              type="button"
+                              onClick={() => toggleUpstreamType(type)}
+                              className={`rounded-full border px-2.5 py-0.5 text-[11px] font-semibold transition ${upstreamTypes.has(type) ? "border-transparent text-white" : "border-zinc-700 text-zinc-500"}`}
+                              style={upstreamTypes.has(type) ? { backgroundColor: edgeStyles[type].color + "33", borderColor: edgeStyles[type].color, color: edgeStyles[type].color } : undefined}
+                            >
+                              {edgeStyles[type].label}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="mt-5 flex flex-col gap-2">
+                          <Link
+                            href={`/media/${panelMedia.id}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center justify-center rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-zinc-800"
+                          >
+                            View full page ↗
+                          </Link>
+                          <button
+                            type="button"
+                            onClick={() => handleHighlight(panelMedia.id)}
+                            className="flex items-center justify-center rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-zinc-800 hover:text-white"
+                          >
+                            Highlight connections
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleHighlightUpstream(panelMedia.id)}
+                            className="flex items-center justify-center rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-zinc-800 hover:text-white"
+                          >
+                            Highlight up to this point
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const wasWatched = isWatched(panelMedia.id);
+                              toggleWatched(panelMedia.id);
+                              showToast(wasWatched ? "Removed from watched" : "✓ Marked as watched");
+                            }}
+                            className={`flex items-center justify-center gap-1.5 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${isWatched(panelMedia.id) ? "border-emerald-700 bg-emerald-900/30 text-emerald-300 hover:bg-emerald-900/50" : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800 hover:text-white"}`}
+                          >
+                            {isWatched(panelMedia.id) ? "✓ Watched" : "Mark as watched"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPanelMode("mark-upstream")}
+                            className="flex items-center justify-center rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-zinc-800 hover:text-white"
+                          >
+                            Mark up to this point
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
                 </aside>
               )}

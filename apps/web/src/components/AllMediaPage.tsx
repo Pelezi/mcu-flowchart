@@ -210,6 +210,26 @@ export function AllMediaPage() {
     showToast(wasWatched ? "Removed from watched" : "✓ Marked as watched");
   }, [isWatched, toggleWatched, showToast]);
 
+  const handleGroupToggle = useCallback((items: Media[]) => {
+    const allWatched = items.every((item) => isWatched(item.id));
+
+    if (allWatched) {
+      for (const item of items) {
+        toggleWatched(item.id);
+      }
+      showToast(`Removed ${items.length} from watched`);
+    } else {
+      let count = 0;
+      for (const item of items) {
+        if (!isWatched(item.id)) {
+          toggleWatched(item.id);
+          count++;
+        }
+      }
+      showToast(`✓ Marked ${count} as watched`);
+    }
+  }, [isWatched, toggleWatched, showToast]);
+
   useEffect(() => {
     const fetchMedia = async () => {
       try {
@@ -471,7 +491,21 @@ export function AllMediaPage() {
                   className="space-y-5 scroll-mt-24 md:scroll-mt-28 lg:scroll-mt-32"
                 >
                   <div className="flex flex-col flex-wrap items-center justify-center gap-3 py-4 sm:gap-4 sm:py-5">
-                    <h2 className="text-center text-2xl font-bold text-white sm:text-3xl">{sagaGroup.title}</h2>
+                    <div className="flex items-center gap-3">
+                      <h2 className="text-center text-2xl font-bold text-white sm:text-3xl">{sagaGroup.title}</h2>
+                      {(() => {
+                        const allWatched = sagaGroup.items.every((item) => isWatched(item.id));
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => handleGroupToggle(sagaGroup.items)}
+                            className={`shrink-0 rounded-full border px-3 py-1 text-xs font-semibold transition hover:-translate-y-0.5 ${allWatched ? "border-emerald-700 bg-emerald-900/30 text-emerald-300" : "border-zinc-700 bg-zinc-900/60 text-zinc-400 hover:text-zinc-200"}`}
+                          >
+                            {allWatched ? "✓ All watched" : "Mark all"}
+                          </button>
+                        );
+                      })()}
+                    </div>
                     <p className="text-center text-sm text-zinc-400 sm:text-base">
                       {sagaGroup.description}
                     </p>
@@ -485,6 +519,13 @@ export function AllMediaPage() {
                           <h3 className="shrink-0 rounded-full border border-zinc-800 bg-zinc-950/70 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-400">
                             Phase {phaseGroup.phase}
                           </h3>
+                          <button
+                            type="button"
+                            onClick={() => handleGroupToggle(phaseGroup.items)}
+                            className={`shrink-0 rounded-full border px-2 py-0.5 text-[9px] font-semibold transition ${phaseGroup.items.every((item) => isWatched(item.id)) ? "border-emerald-800 text-emerald-500" : "border-zinc-700 text-zinc-500 hover:text-zinc-300"}`}
+                          >
+                            {phaseGroup.items.every((item) => isWatched(item.id)) ? "✓ All" : "Mark all"}
+                          </button>
                           <div className="h-px flex-1 bg-zinc-800/80" />
                         </div>
 
@@ -520,7 +561,21 @@ export function AllMediaPage() {
                   className="space-y-3 scroll-mt-24 md:scroll-mt-28 lg:scroll-mt-32"
                 >
                   <div className="flex flex-col flex-wrap items-center justify-center gap-3 py-4 sm:gap-4 sm:py-5">
-                    <h2 className="text-center text-2xl font-bold text-white sm:text-3xl">{group.title}</h2>
+                    <div className="flex items-center gap-3">
+                      <h2 className="text-center text-2xl font-bold text-white sm:text-3xl">{group.title}</h2>
+                      {(() => {
+                        const allWatched = group.items.every((item) => isWatched(item.id));
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => handleGroupToggle(group.items)}
+                            className={`shrink-0 rounded-full border px-3 py-1 text-xs font-semibold transition hover:-translate-y-0.5 ${allWatched ? "border-emerald-700 bg-emerald-900/30 text-emerald-300" : "border-zinc-700 bg-zinc-900/60 text-zinc-400 hover:text-zinc-200"}`}
+                          >
+                            {allWatched ? "✓ All watched" : "Mark all"}
+                          </button>
+                        );
+                      })()}
+                    </div>
                     <p className="text-center text-sm text-zinc-400 sm:text-base">
                       {group.description}
                     </p>
